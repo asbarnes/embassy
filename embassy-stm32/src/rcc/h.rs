@@ -14,7 +14,7 @@ pub const HSI_FREQ: Hertz = Hertz(64_000_000);
 /// CSI speed
 pub const CSI_FREQ: Hertz = Hertz(4_000_000);
 
-const VCO_RANGE: RangeInclusive<Hertz> = Hertz(150_000_000)..=Hertz(420_000_000);
+const VCO_RANGE: RangeInclusive<Hertz> = Hertz(125_000_000)..=Hertz(420_000_000);
 #[cfg(any(stm32h5, pwr_h7rm0455))]
 const VCO_WIDE_RANGE: RangeInclusive<Hertz> = Hertz(128_000_000)..=Hertz(560_000_000);
 #[cfg(pwr_h7rm0468)]

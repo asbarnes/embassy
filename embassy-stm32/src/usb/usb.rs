@@ -1,5 +1,8 @@
 #![macro_use]
 
+#[cfg(usb_v4)]
+mod usb_host;
+
 use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -9,8 +12,11 @@ use embassy_hal_internal::into_ref;
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_usb_driver as driver;
 use embassy_usb_driver::{
-    Direction, EndpointAddress, EndpointAllocError, EndpointError, EndpointInfo, EndpointType, Event, Unsupported,
+    Direction, EndpointAddress, EndpointAllocError, EndpointError, EndpointInfo, EndpointType,
+    Event, Unsupported,
 };
+#[cfg(usb_v4)]
+pub use usb_host::*;
 
 use crate::pac::usb::regs;
 use crate::pac::usb::vals::{EpType, Stat};
@@ -80,8 +86,6 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
 
         if istr.ctr() {
             let index = istr.ep_id() as usize;
-            CTR_TRIGGERED[index].store(true, Ordering::Relaxed);
-
             let mut epr = regs.epr(index).read();
             if epr.ctr_rx() {
                 if index == 0 && epr.setup() {
@@ -122,10 +126,6 @@ const USBRAM_ALIGN: usize = 4;
 const NEW_AW: AtomicWaker = AtomicWaker::new();
 static BUS_WAKER: AtomicWaker = NEW_AW;
 static EP0_SETUP: AtomicBool = AtomicBool::new(false);
-
-const NEW_CTR_TRIGGERED: AtomicBool = AtomicBool::new(false);
-static CTR_TRIGGERED: [AtomicBool; EP_COUNT] = [NEW_CTR_TRIGGERED; EP_COUNT];
-
 static EP_IN_WAKERS: [AtomicWaker; EP_COUNT] = [NEW_AW; EP_COUNT];
 static EP_OUT_WAKERS: [AtomicWaker; EP_COUNT] = [NEW_AW; EP_COUNT];
 static IRQ_RESET: AtomicBool = AtomicBool::new(false);
@@ -169,37 +169,20 @@ fn calc_out_len(len: u16) -> (u16, u16) {
 mod btable {
     use super::*;
 
-    pub(super) fn write_in_tx<T: Instance>(index: usize, addr: u16) {
+    pub(super) fn write_in<T: Instance>(index: usize, addr: u16) {
         USBRAM.mem(index * 4 + 0).write_value(addr);
     }
 
-    pub(super) fn write_in_rx<T: Instance>(index: usize, addr: u16) {
-        USBRAM.mem(index * 4 + 2).write_value(addr);
-    }
-
-    pub(super) fn write_in_len_rx<T: Instance>(index: usize, _addr: u16, len: u16) {
-        USBRAM.mem(index * 4 + 3).write_value(len);
-    }
-
-    pub(super) fn write_in_len_tx<T: Instance>(index: usize, _addr: u16, len: u16) {
+    pub(super) fn write_in_len<T: Instance>(index: usize, _addr: u16, len: u16) {
         USBRAM.mem(index * 4 + 1).write_value(len);
     }
 
-    pub(super) fn write_out_rx<T: Instance>(index: usize, addr: u16, max_len_bits: u16) {
+    pub(super) fn write_out<T: Instance>(index: usize, addr: u16, max_len_bits: u16) {
         USBRAM.mem(index * 4 + 2).write_value(addr);
         USBRAM.mem(index * 4 + 3).write_value(max_len_bits);
     }
 
-    pub(super) fn write_out_tx<T: Instance>(index: usize, addr: u16, max_len_bits: u16) {
-        USBRAM.mem(index * 4 + 0).write_value(addr);
-        USBRAM.mem(index * 4 + 1).write_value(max_len_bits);
-    }
-
-    pub(super) fn read_out_len_tx<T: Instance>(index: usize) -> u16 {
-        USBRAM.mem(index * 4 + 1).read()
-    }
-
-    pub(super) fn read_out_len_rx<T: Instance>(index: usize) -> u16 {
+    pub(super) fn read_out_len<T: Instance>(index: usize) -> u16 {
         USBRAM.mem(index * 4 + 3).read()
     }
 }
@@ -207,37 +190,21 @@ mod btable {
 mod btable {
     use super::*;
 
-    pub(super) fn write_in_tx<T: Instance>(_index: usize, _addr: u16) {}
+    pub(super) fn write_in<T: Instance>(_index: usize, _addr: u16) {}
 
-    pub(super) fn write_in_rx<T: Instance>(_index: usize, _addr: u16) {}
-
-    pub(super) fn write_in_len_tx<T: Instance>(index: usize, addr: u16, len: u16) {
-        USBRAM.mem(index * 2).write_value((addr as u32) | ((len as u32) << 16));
-    }
-
-    pub(super) fn write_in_len_rx<T: Instance>(index: usize, addr: u16, len: u16) {
+    pub(super) fn write_in_len<T: Instance>(index: usize, addr: u16, len: u16) {
         USBRAM
-            .mem(index * 2 + 1)
+            .mem(index * 2)
             .write_value((addr as u32) | ((len as u32) << 16));
     }
 
-    pub(super) fn write_out_tx<T: Instance>(index: usize, addr: u16, max_len_bits: u16) {
-        USBRAM
-            .mem(index * 2)
-            .write_value((addr as u32) | ((max_len_bits as u32) << 16));
-    }
-
-    pub(super) fn write_out_rx<T: Instance>(index: usize, addr: u16, max_len_bits: u16) {
+    pub(super) fn write_out<T: Instance>(index: usize, addr: u16, max_len_bits: u16) {
         USBRAM
             .mem(index * 2 + 1)
             .write_value((addr as u32) | ((max_len_bits as u32) << 16));
     }
 
-    pub(super) fn read_out_len_tx<T: Instance>(index: usize) -> u16 {
-        (USBRAM.mem(index * 2).read() >> 16) as u16
-    }
-
-    pub(super) fn read_out_len_rx<T: Instance>(index: usize) -> u16 {
+    pub(super) fn read_out_len<T: Instance>(index: usize) -> u16 {
         (USBRAM.mem(index * 2 + 1).read() >> 16) as u16
     }
 }
@@ -269,7 +236,9 @@ impl<T: Instance> EndpointBuffer<T> {
             let val = u16::from_le_bytes(val);
             #[cfg(any(usbram_32_2048, usbram_32_1024))]
             let val = u32::from_le_bytes(val);
-            USBRAM.mem(self.addr as usize / USBRAM_ALIGN + i).write_value(val);
+            USBRAM
+                .mem(self.addr as usize / USBRAM_ALIGN + i)
+                .write_value(val);
         }
     }
 }
@@ -319,8 +288,14 @@ impl<'d, T: Instance> Driver<'d, T> {
         #[cfg(not(stm32l1))]
         {
             use crate::gpio::{AfType, OutputType, Speed};
-            dp.set_as_af(dp.af_num(), AfType::output(OutputType::PushPull, Speed::VeryHigh));
-            dm.set_as_af(dm.af_num(), AfType::output(OutputType::PushPull, Speed::VeryHigh));
+            dp.set_as_af(
+                dp.af_num(),
+                AfType::output(OutputType::PushPull, Speed::VeryHigh),
+            );
+            dm.set_as_af(
+                dm.af_num(),
+                AfType::output(OutputType::PushPull, Speed::VeryHigh),
+            );
         }
         #[cfg(stm32l1)]
         let _ = (dp, dm); // suppress "unused" warnings.
@@ -368,13 +343,6 @@ impl<'d, T: Instance> Driver<'d, T> {
                 return false; // reserved for control pipe
             }
             let used = ep.used_out || ep.used_in;
-            if used && (ep.ep_type == EndpointType::Isochronous || ep.ep_type == EndpointType::Bulk) {
-                // Isochronous and bulk endpoints are double-buffered.
-                // Their corresponding endpoint/channel registers are forced to be unidirectional.
-                // Do not reuse this index.
-                return false;
-            }
-
             let used_dir = match D::dir() {
                 Direction::Out => ep.used_out,
                 Direction::In => ep.used_in,
@@ -398,11 +366,7 @@ impl<'d, T: Instance> Driver<'d, T> {
                 let addr = self.alloc_ep_mem(len);
 
                 trace!("  len_bits = {:04x}", len_bits);
-                btable::write_out_rx::<T>(index, addr, len_bits);
-
-                if ep_type == EndpointType::Isochronous {
-                    btable::write_out_tx::<T>(index, addr, len_bits);
-                }
+                btable::write_out::<T>(index, addr, len_bits);
 
                 EndpointBuffer {
                     addr,
@@ -418,11 +382,7 @@ impl<'d, T: Instance> Driver<'d, T> {
                 let addr = self.alloc_ep_mem(len);
 
                 // ep_in_len is written when actually TXing packets.
-                btable::write_in_tx::<T>(index, addr);
-
-                if ep_type == EndpointType::Isochronous {
-                    btable::write_in_rx::<T>(index, addr);
-                }
+                btable::write_in::<T>(index, addr);
 
                 EndpointBuffer {
                     addr,
@@ -604,7 +564,9 @@ impl<'d, T: Instance> driver::Bus for Bus<'d, T> {
                                 true => Stat::STALL,
                             };
                             let mut w = invariant(r);
-                            w.set_stat_tx(Stat::from_bits(r.stat_tx().to_bits() ^ want_stat.to_bits()));
+                            w.set_stat_tx(Stat::from_bits(
+                                r.stat_tx().to_bits() ^ want_stat.to_bits(),
+                            ));
                             reg.write_value(w);
                         }
                     }
@@ -623,7 +585,9 @@ impl<'d, T: Instance> driver::Bus for Bus<'d, T> {
                                 true => Stat::STALL,
                             };
                             let mut w = invariant(r);
-                            w.set_stat_rx(Stat::from_bits(r.stat_rx().to_bits() ^ want_stat.to_bits()));
+                            w.set_stat_rx(Stat::from_bits(
+                                r.stat_rx().to_bits() ^ want_stat.to_bits(),
+                            ));
                             reg.write_value(w);
                         }
                     }
@@ -712,18 +676,6 @@ impl Dir for Out {
     }
 }
 
-/// Selects the packet buffer.
-///
-/// For double-buffered endpoints, both the `Rx` and `Tx` buffer from a channel are used for the same
-/// direction of transfer. This is opposed to single-buffered endpoints, where one channel can serve
-/// two directions at the same time.
-enum PacketBuffer {
-    /// The RX buffer - must be used for single-buffered OUT endpoints
-    Rx,
-    /// The TX buffer - must be used for single-buffered IN endpoints
-    Tx,
-}
-
 /// USB endpoint.
 pub struct Endpoint<'d, T: Instance, D> {
     _phantom: PhantomData<(&'d mut T, D)>,
@@ -732,57 +684,21 @@ pub struct Endpoint<'d, T: Instance, D> {
 }
 
 impl<'d, T: Instance, D> Endpoint<'d, T, D> {
-    /// Write to a double-buffered endpoint.
-    ///
-    /// For double-buffered endpoints, the data buffers overlap, but we still need to write to the right counter field.
-    /// The DTOG_TX bit indicates the buffer that is currently in use by the USB peripheral, that is, the buffer in
-    /// which the next transmit packet will be stored, so we need to write the counter of the OTHER buffer, which is
-    /// where the last transmitted packet was stored.
-    fn write_data_double_buffered(&mut self, buf: &[u8], packet_buffer: PacketBuffer) {
+    fn write_data(&mut self, buf: &[u8]) {
         let index = self.info.addr.index();
         self.buf.write(buf);
-
-        match packet_buffer {
-            PacketBuffer::Rx => btable::write_in_len_rx::<T>(index, self.buf.addr, buf.len() as _),
-            PacketBuffer::Tx => btable::write_in_len_tx::<T>(index, self.buf.addr, buf.len() as _),
-        }
+        btable::write_in_len::<T>(index, self.buf.addr, buf.len() as _);
     }
 
-    /// Write to a single-buffered endpoint.
-    fn write_data(&mut self, buf: &[u8]) {
-        self.write_data_double_buffered(buf, PacketBuffer::Tx);
-    }
-
-    /// Read from a double-buffered endpoint.
-    ///
-    /// For double-buffered endpoints, the data buffers overlap, but we still need to read from the right counter field.
-    /// The DTOG_RX bit indicates the buffer that is currently in use by the USB peripheral, that is, the buffer in
-    /// which the next received packet will be stored, so we need to read the counter of the OTHER buffer, which is
-    /// where the last received packet was stored.
-    fn read_data_double_buffered(
-        &mut self,
-        buf: &mut [u8],
-        packet_buffer: PacketBuffer,
-    ) -> Result<usize, EndpointError> {
+    fn read_data(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
         let index = self.info.addr.index();
-
-        let rx_len = match packet_buffer {
-            PacketBuffer::Rx => btable::read_out_len_rx::<T>(index),
-            PacketBuffer::Tx => btable::read_out_len_tx::<T>(index),
-        } as usize
-            & 0x3FF;
-
+        let rx_len = btable::read_out_len::<T>(index) as usize & 0x3FF;
         trace!("READ DONE, rx_len = {}", rx_len);
         if rx_len > buf.len() {
             return Err(EndpointError::BufferOverflow);
         }
         self.buf.read(&mut buf[..rx_len]);
         Ok(rx_len)
-    }
-
-    /// Read from a single-buffered endpoint.
-    fn read_data(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
-        self.read_data_double_buffered(buf, PacketBuffer::Rx)
     }
 }
 
@@ -838,53 +754,25 @@ impl<'d, T: Instance> driver::EndpointOut for Endpoint<'d, T, Out> {
             EP_OUT_WAKERS[index].register(cx.waker());
             let regs = T::regs();
             let stat = regs.epr(index).read().stat_rx();
-            if self.info.ep_type == EndpointType::Isochronous {
-                // The isochronous endpoint does not change its `STAT_RX` field to `NAK` when receiving a packet.
-                // Therefore, this instead waits until the `CTR` interrupt was triggered.
-                if matches!(stat, Stat::DISABLED) || CTR_TRIGGERED[index].load(Ordering::Relaxed) {
-                    Poll::Ready(stat)
-                } else {
-                    Poll::Pending
-                }
+            if matches!(stat, Stat::NAK | Stat::DISABLED) {
+                Poll::Ready(stat)
             } else {
-                if matches!(stat, Stat::NAK | Stat::DISABLED) {
-                    Poll::Ready(stat)
-                } else {
-                    Poll::Pending
-                }
+                Poll::Pending
             }
         })
         .await;
-
-        CTR_TRIGGERED[index].store(false, Ordering::Relaxed);
 
         if stat == Stat::DISABLED {
             return Err(EndpointError::Disabled);
         }
 
+        let rx_len = self.read_data(buf)?;
+
         let regs = T::regs();
-
-        let packet_buffer = if self.info.ep_type == EndpointType::Isochronous {
-            // Find the buffer, which is currently in use. Read from the OTHER buffer.
-            if regs.epr(index).read().dtog_rx() {
-                PacketBuffer::Rx
-            } else {
-                PacketBuffer::Tx
-            }
-        } else {
-            PacketBuffer::Rx
-        };
-
-        let rx_len = self.read_data_double_buffered(buf, packet_buffer)?;
-
         regs.epr(index).write(|w| {
             w.set_ep_type(convert_type(self.info.ep_type));
             w.set_ea(self.info.addr.index() as _);
-            if self.info.ep_type == EndpointType::Isochronous {
-                w.set_stat_rx(Stat::from_bits(0)); // STAT_RX remains `VALID`.
-            } else {
-                w.set_stat_rx(Stat::from_bits(Stat::NAK.to_bits() ^ Stat::VALID.to_bits()));
-            }
+            w.set_stat_rx(Stat::from_bits(Stat::NAK.to_bits() ^ Stat::VALID.to_bits()));
             w.set_stat_tx(Stat::from_bits(0));
             w.set_ctr_rx(true); // don't clear
             w.set_ctr_tx(true); // don't clear
@@ -908,54 +796,25 @@ impl<'d, T: Instance> driver::EndpointIn for Endpoint<'d, T, In> {
             EP_IN_WAKERS[index].register(cx.waker());
             let regs = T::regs();
             let stat = regs.epr(index).read().stat_tx();
-            if self.info.ep_type == EndpointType::Isochronous {
-                // The isochronous endpoint does not change its `STAT_RX` field to `NAK` when receiving a packet.
-                // Therefore, this instead waits until the `CTR` interrupt was triggered.
-                if matches!(stat, Stat::DISABLED) || CTR_TRIGGERED[index].load(Ordering::Relaxed) {
-                    Poll::Ready(stat)
-                } else {
-                    Poll::Pending
-                }
+            if matches!(stat, Stat::NAK | Stat::DISABLED) {
+                Poll::Ready(stat)
             } else {
-                if matches!(stat, Stat::NAK | Stat::DISABLED) {
-                    Poll::Ready(stat)
-                } else {
-                    Poll::Pending
-                }
+                Poll::Pending
             }
         })
         .await;
-
-        CTR_TRIGGERED[index].store(false, Ordering::Relaxed);
 
         if stat == Stat::DISABLED {
             return Err(EndpointError::Disabled);
         }
 
-        let regs = T::regs();
-
-        let packet_buffer = if self.info.ep_type == EndpointType::Isochronous {
-            // Find the buffer, which is currently in use. Write to the OTHER buffer.
-            if regs.epr(index).read().dtog_tx() {
-                PacketBuffer::Tx
-            } else {
-                PacketBuffer::Rx
-            }
-        } else {
-            PacketBuffer::Tx
-        };
-
-        self.write_data_double_buffered(buf, packet_buffer);
+        self.write_data(buf);
 
         let regs = T::regs();
         regs.epr(index).write(|w| {
             w.set_ep_type(convert_type(self.info.ep_type));
             w.set_ea(self.info.addr.index() as _);
-            if self.info.ep_type == EndpointType::Isochronous {
-                w.set_stat_tx(Stat::from_bits(0)); // STAT_TX remains `VALID`.
-            } else {
-                w.set_stat_tx(Stat::from_bits(Stat::NAK.to_bits() ^ Stat::VALID.to_bits()));
-            }
+            w.set_stat_tx(Stat::from_bits(Stat::NAK.to_bits() ^ Stat::VALID.to_bits()));
             w.set_stat_rx(Stat::from_bits(0));
             w.set_ctr_rx(true); // don't clear
             w.set_ctr_tx(true); // don't clear
@@ -1007,7 +866,12 @@ impl<'d, T: Instance> driver::ControlPipe for ControlPipe<'d, T> {
         }
     }
 
-    async fn data_out(&mut self, buf: &mut [u8], first: bool, last: bool) -> Result<usize, EndpointError> {
+    async fn data_out(
+        &mut self,
+        buf: &mut [u8],
+        first: bool,
+        last: bool,
+    ) -> Result<usize, EndpointError> {
         let regs = T::regs();
 
         // When a SETUP is received, Stat/Stat is set to NAK.
@@ -1149,8 +1013,12 @@ impl<'d, T: Instance> driver::ControlPipe for ControlPipe<'d, T> {
         let epr = regs.epr(0).read();
         regs.epr(0).write(|w| {
             w.set_ep_type(EpType::CONTROL);
-            w.set_stat_rx(Stat::from_bits(epr.stat_rx().to_bits() ^ Stat::STALL.to_bits()));
-            w.set_stat_tx(Stat::from_bits(epr.stat_tx().to_bits() ^ Stat::VALID.to_bits()));
+            w.set_stat_rx(Stat::from_bits(
+                epr.stat_rx().to_bits() ^ Stat::STALL.to_bits(),
+            ));
+            w.set_stat_tx(Stat::from_bits(
+                epr.stat_tx().to_bits() ^ Stat::VALID.to_bits(),
+            ));
             w.set_ctr_rx(true); // don't clear
             w.set_ctr_tx(true); // don't clear
         });
@@ -1180,8 +1048,12 @@ impl<'d, T: Instance> driver::ControlPipe for ControlPipe<'d, T> {
         let epr = regs.epr(0).read();
         regs.epr(0).write(|w| {
             w.set_ep_type(EpType::CONTROL);
-            w.set_stat_rx(Stat::from_bits(epr.stat_rx().to_bits() ^ Stat::STALL.to_bits()));
-            w.set_stat_tx(Stat::from_bits(epr.stat_tx().to_bits() ^ Stat::STALL.to_bits()));
+            w.set_stat_rx(Stat::from_bits(
+                epr.stat_rx().to_bits() ^ Stat::STALL.to_bits(),
+            ));
+            w.set_stat_tx(Stat::from_bits(
+                epr.stat_tx().to_bits() ^ Stat::STALL.to_bits(),
+            ));
             w.set_ctr_rx(true); // don't clear
             w.set_ctr_tx(true); // don't clear
         });

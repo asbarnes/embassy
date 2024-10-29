@@ -15,6 +15,8 @@ mod descriptor_reader;
 pub mod msos;
 pub mod types;
 
+pub mod host;
+
 mod config {
     #![allow(unused)]
     include!(concat!(env!("OUT_DIR"), "/config.rs"));
@@ -362,7 +364,10 @@ impl<'d, D: Driver<'d>> UsbDevice<'d, D> {
         // The host doesn't know our EP0 max packet size yet, and might assume
         // a full-length packet is a short packet, thinking we're done sending data.
         // See https://github.com/hathach/tinyusb/issues/184
-        if self.inner.address == 0 && max_packet_size < DEVICE_DESCRIPTOR_LEN && max_packet_size < resp_length {
+        if self.inner.address == 0
+            && max_packet_size < DEVICE_DESCRIPTOR_LEN
+            && max_packet_size < resp_length
+        {
             trace!("received control req while not addressed: capping response to 1 packet.");
             resp_length = max_packet_size;
         }
@@ -533,8 +538,10 @@ impl<'d, D: Driver<'d>> Inner<'d, D> {
                     // Enable all endpoints of selected alt settings.
                     foreach_endpoint(self.config_descriptor, |ep| {
                         let iface = &self.interfaces[ep.interface.0 as usize];
-                        self.bus
-                            .endpoint_set_enabled(ep.ep_address, iface.current_alt_setting == ep.interface_alt);
+                        self.bus.endpoint_set_enabled(
+                            ep.ep_address,
+                            iface.current_alt_setting == ep.interface_alt,
+                        );
                     })
                     .unwrap();
 
@@ -585,8 +592,10 @@ impl<'d, D: Driver<'d>> Inner<'d, D> {
                         // Enable/disable EPs of this interface as needed.
                         foreach_endpoint(self.config_descriptor, |ep| {
                             if ep.interface == iface_num {
-                                self.bus
-                                    .endpoint_set_enabled(ep.ep_address, iface.current_alt_setting == ep.interface_alt);
+                                self.bus.endpoint_set_enabled(
+                                    ep.ep_address,
+                                    iface.current_alt_setting == ep.interface_alt,
+                                );
                             }
                         })
                         .unwrap();
@@ -698,7 +707,11 @@ impl<'d, D: Driver<'d>> Inner<'d, D> {
         OutResponse::Rejected
     }
 
-    fn handle_control_in_delegated<'a>(&'a mut self, req: Request, buf: &'a mut [u8]) -> InResponse<'a> {
+    fn handle_control_in_delegated<'a>(
+        &'a mut self,
+        req: Request,
+        buf: &'a mut [u8],
+    ) -> InResponse<'a> {
         unsafe fn extend_lifetime<'y>(r: InResponse<'_>) -> InResponse<'y> {
             core::mem::transmute(r)
         }
@@ -767,7 +780,9 @@ impl<'d, D: Driver<'d>> Inner<'d, D> {
                     }
                 }
             }
-            descriptor_type::DEVICE_QUALIFIER => InResponse::Accepted(&self.device_qualifier_descriptor),
+            descriptor_type::DEVICE_QUALIFIER => {
+                InResponse::Accepted(&self.device_qualifier_descriptor)
+            }
             _ => InResponse::Rejected,
         }
     }
