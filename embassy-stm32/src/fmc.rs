@@ -2,6 +2,7 @@
 use core::marker::PhantomData;
 
 use embassy_hal_internal::into_ref;
+use stm32_metapac::fmc::vals::*;
 
 use crate::gpio::{AfType, OutputType, Pull, Speed};
 use crate::{rcc, Peripheral};
@@ -39,6 +40,38 @@ where
         T::REGS.bcr1().modify(|r| r.set_fmcen(true));
         #[cfg(any(fmc_v4))]
         T::REGS.nor_psram().bcr1().modify(|r| r.set_fmcen(true));
+    }
+
+    /// Enable the norpsram memory controller on applicable chips.
+    pub fn memory_controller_enable_norpsram(&mut self) {
+
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_fmcen(true));
+
+        // clearmask 0xfffb7f
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_mbken(false));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_muxen(false));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_mtyp(Mtyp::SRAM));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_mwid(Mwid::BITS8));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_faccen(false));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_bursten(false));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_waitpol(Waitpol::ACTIVELOW));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_waitcfg(Waitcfg::BEFOREWAITSTATE));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_wren(false));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_waiten(false));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_extmod(false));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_asyncwait(false));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_cburstrw(Cburstrw::ASYNCHRONOUS));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_cclken(false));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_wfdis(false));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_nblset(0));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_cpsize(Cpsize::NOBURSTSPLIT));
+
+        // setmask 0x201010
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_mwid(Mwid::BITS16));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_wren(true));
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_wfdis(true));
+
+        T::REGS.nor_psram().bcr1().modify(|r| r.set_mbken(true));
     }
 
     /// Get the kernel clock currently in use for this FMC instance.
